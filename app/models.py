@@ -1,9 +1,13 @@
-from sqlalchemy.orm import defaultload
+from sqlalchemy.orm import backref, defaultload
 from app import db, login
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 from hashlib import md5
+
+followers = db.Table('followers',
+    db.Column('follower_id', db.Integer, db.ForeignKey('user.id')),
+    db.Column('followed_id', db.Integer, db.ForeignKey('user.id')))
 
 class User(UserMixin,db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -12,13 +16,42 @@ class User(UserMixin,db.Model):
     password_hash = db.Column(db.String(128))
     about_me = db.Column(db.String(140))
     last_seen = db.Column(db.DateTime, default=datetime.utcnow)
-    
-
 
     # db.relationship typically defined on the "one" side
     # allows us to access the "many" from the "one"
     # backref creates the name of the field that links the "many" to the "one"
     posts = db.relationship('Post',backref='author', lazy='dynamic')
+
+    # Follower/Following relationships
+    followed = db.relationship(
+        'User', secondary=followers, 
+        primaryjoin=(followers.c.follower_id == id), 
+        secondaryjoin=(followers.c.followed_id == id),
+        backref = db.backref('followers',lazy='dynamic'), lazy='dynamic')
+
+    def follow(self, user):
+        if not self.is_following(user):
+            self.followed.append(user)
+
+    def unfollow(self, user):
+        if self.is_following(user):
+            self.followed.remove(user)
+
+    def is_following(self, user):
+        return self.followed.filter(followers.c.followed_id == user.id).count() > 0
+
+    def followed_posts(self):
+        # NOTE: will note return own posts because a user does not follow themselves
+        followed = Post.query.join(
+            followers, (followers.c.followed_id == Post.user_id)).filter(
+                followers.c.follower_id == self.id)
+        
+        # Use union to remedy this
+        own = Post.query.filter_by(user_id=self.id)
+        return followed.union(own).order_by(Post.timestamp.desc())
+
+        
+
 
     def avatar(self, size):
         digest = md5(self.email.lower().encode('utf-8')).hexdigest()
@@ -43,6 +76,8 @@ class Post(db.Model):
 
     def __repr__(self):
         return f'<Post {self.body}>'
+
+
 
 @login.user_loader
 def load_user(id):
